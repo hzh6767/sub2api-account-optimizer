@@ -1,0 +1,822 @@
+diff --git a/backend/internal/handler/admin/account_handler.go b/backend/internal/handler/admin/account_handler.go
+index c43348528befca1164d9084b4d2cd20d27c8a40f..796acc29e031c4b951d3048626f719e76cfaafdb 100644
+--- a/backend/internal/handler/admin/account_handler.go
++++ b/backend/internal/handler/admin/account_handler.go
+@@ -719,6 +719,10 @@ type PreviewFromCRSRequest struct {
+ 	Password string `json:"password" binding:"required"`
+ }
+ 
++func shouldRecoverAfterAccountTest(mode string) bool {
++	return !strings.EqualFold(strings.TrimSpace(mode), service.AccountTestModeOptimizer)
++}
++
+ // Test handles testing account connectivity with SSE streaming
+ // POST /api/v1/admin/accounts/:id/test
+ func (h *AccountHandler) Test(c *gin.Context) {
+@@ -738,7 +742,7 @@ func (h *AccountHandler) Test(c *gin.Context) {
+ 		return
+ 	}
+ 
+-	if h.rateLimitService != nil {
++	if h.rateLimitService != nil && shouldRecoverAfterAccountTest(req.Mode) {
+ 		if _, err := h.rateLimitService.RecoverAccountAfterSuccessfulTest(c.Request.Context(), accountID); err != nil {
+ 			_ = c.Error(err)
+ 		}
+diff --git a/backend/internal/handler/admin/account_handler_test_mode_test.go b/backend/internal/handler/admin/account_handler_test_mode_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..ca9c7d3e8a8073077b93f03c4ff1e275af10bda3
+--- /dev/null
++++ b/backend/internal/handler/admin/account_handler_test_mode_test.go
+@@ -0,0 +1,22 @@
++package admin
++
++import "testing"
++
++func TestAccountHandlerTestRecoveryPolicySkipsOptimizerMode(t *testing.T) {
++	tests := []struct {
++		mode string
++		want bool
++	}{
++		{mode: "", want: true},
++		{mode: "default", want: true},
++		{mode: "compact", want: true},
++		{mode: "optimizer", want: false},
++		{mode: " OPTIMIZER ", want: false},
++	}
++
++	for _, test := range tests {
++		if got := shouldRecoverAfterAccountTest(test.mode); got != test.want {
++			t.Fatalf("shouldRecoverAfterAccountTest(%q) = %v, want %v", test.mode, got, test.want)
++		}
++	}
++}
+diff --git a/backend/internal/service/account_test_service.go b/backend/internal/service/account_test_service.go
+index cc25943d275bdc9af21812a62d1f7c14a9097df8..aa0d383016b55c6e972181725b423317f40b1bb2 100644
+--- a/backend/internal/service/account_test_service.go
++++ b/backend/internal/service/account_test_service.go
+@@ -39,16 +39,19 @@ const (
+ 
+ // TestEvent represents a SSE event for account testing
+ type TestEvent struct {
+-	Type     string `json:"type"`
+-	Text     string `json:"text,omitempty"`
+-	Model    string `json:"model,omitempty"`
+-	Status   string `json:"status,omitempty"`
+-	Code     string `json:"code,omitempty"`
+-	ImageURL string `json:"image_url,omitempty"`
+-	MimeType string `json:"mime_type,omitempty"`
+-	Data     any    `json:"data,omitempty"`
+-	Success  bool   `json:"success,omitempty"`
+-	Error    string `json:"error,omitempty"`
++	Type           string `json:"type"`
++	Text           string `json:"text,omitempty"`
++	Model          string `json:"model,omitempty"`
++	RequestedModel string `json:"requested_model,omitempty"`
++	Mode           string `json:"mode,omitempty"`
++	Status         string `json:"status,omitempty"`
++	Code           string `json:"code,omitempty"`
++	ImageURL       string `json:"image_url,omitempty"`
++	MimeType       string `json:"mime_type,omitempty"`
++	Data           any    `json:"data,omitempty"`
++	Success        bool   `json:"success,omitempty"`
++	Error          string `json:"error,omitempty"`
++	ResetAt        string `json:"reset_at,omitempty"`
+ }
+ 
+ const (
+@@ -505,10 +508,11 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
+ 	mode = normalizeAccountTestMode(mode)
+ 
+ 	// Default to openai.DefaultTestModel for OpenAI testing
+-	testModelID := modelID
+-	if testModelID == "" {
+-		testModelID = openai.DefaultTestModel
++	requestedModelID := modelID
++	if requestedModelID == "" {
++		requestedModelID = openai.DefaultTestModel
+ 	}
++	testModelID := requestedModelID
+ 
+ 	// Align test routing with gateway behavior: OpenAI accounts apply normal
+ 	// account model mapping, and compact mode applies compact-only mapping on top.
+@@ -517,6 +521,14 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
+ 		testModelID = resolveOpenAICompactForwardModel(account, testModelID)
+ 		return s.testOpenAICompactConnection(c, account, testModelID)
+ 	}
++	if mode == AccountTestModeOptimizer && isOpenAIImageModel(testModelID) {
++		return s.sendErrorAndEndWithDetails(
++			c,
++			"optimizer mode only supports ordinary text models",
++			"probe_configuration",
++			nil,
++		)
++	}
+ 
+ 	// Route to image generation test if an image model is selected
+ 	if isOpenAIImageModel(testModelID) {
+@@ -561,7 +573,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
+ 			return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
+ 		}
+ 		if !openai_compat.ShouldUseResponsesAPI(account.Extra) {
+-			return s.testOpenAIChatCompletionsConnection(c, account, testModelID, prompt, normalizedBaseURL, authToken)
++			return s.testOpenAIChatCompletionsConnection(c, account, requestedModelID, testModelID, prompt, normalizedBaseURL, authToken, mode)
+ 		}
+ 		apiURL = buildOpenAIResponsesURL(normalizedBaseURL)
+ 	} else {
+@@ -577,10 +589,18 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
+ 
+ 	// Create OpenAI Responses API payload
+ 	payload := createOpenAITestPayload(testModelID, isOAuth)
++	if mode == AccountTestModeOptimizer {
++		payload = createOpenAIOptimizerTestPayload(testModelID, isOAuth, prompt)
++	}
+ 	payloadBytes, _ := json.Marshal(payload)
+ 
+ 	// Send test_start event
+-	s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
++	testStart := TestEvent{Type: "test_start", Model: testModelID}
++	if mode == AccountTestModeOptimizer {
++		testStart.RequestedModel = requestedModelID
++		testStart.Mode = AccountTestModeOptimizer
++	}
++	s.sendEvent(c, testStart)
+ 
+ 	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(payloadBytes))
+ 	if err != nil {
+@@ -611,7 +631,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
+ 	}
+ 	defer func() { _ = resp.Body.Close() }()
+ 
+-	if isOAuth && s.accountRepo != nil {
++	if mode != AccountTestModeOptimizer && isOAuth && s.accountRepo != nil {
+ 		if updates, err := extractOpenAICodexProbeUpdates(resp); err == nil && len(updates) > 0 {
+ 			_ = s.accountRepo.UpdateExtra(ctx, account.ID, updates)
+ 			mergeAccountExtra(account, updates)
+@@ -620,17 +640,29 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
+ 
+ 	if resp.StatusCode != http.StatusOK {
+ 		body, _ := io.ReadAll(resp.Body)
++		var resetAt *time.Time
+ 		if resp.StatusCode == http.StatusTooManyRequests {
+-			s.reconcileOpenAI429State(ctx, account, resp.Header, body)
++			if mode == AccountTestModeOptimizer {
++				resetAt = s.recordOpenAIOptimizer429State(ctx, account, resp.Header, body)
++			} else {
++				resetAt = s.reconcileOpenAI429State(ctx, account, resp.Header, body)
++			}
+ 		}
+ 		// 401 Unauthorized: 标记账号为永久错误
+-		if resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil {
++		if mode != AccountTestModeOptimizer && resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil {
+ 			errMsg := fmt.Sprintf("Authentication failed (401): %s", string(body))
+ 			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
+ 		}
++		if mode == AccountTestModeOptimizer {
++			return s.sendErrorAndEndWithReset(c, fmt.Sprintf("API returned %d", resp.StatusCode), resetAt)
++		}
+ 		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
+ 	}
+ 
++	if mode == AccountTestModeOptimizer {
++		return s.processOpenAIOptimizerStream(c, resp.Body)
++	}
++
+ 	// Process SSE stream
+ 	return s.processOpenAIStream(c, resp.Body)
+ }
+@@ -723,10 +755,12 @@ func (s *AccountTestService) testGrokAccountConnection(c *gin.Context, account *
+ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
+ 	c *gin.Context,
+ 	account *Account,
++	requestedModelID string,
+ 	testModelID string,
+ 	prompt string,
+ 	normalizedBaseURL string,
+ 	authToken string,
++	mode string,
+ ) error {
+ 	ctx := c.Request.Context()
+ 	apiURL := buildOpenAIChatCompletionsURL(normalizedBaseURL)
+@@ -738,9 +772,17 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
+ 	c.Writer.Flush()
+ 
+ 	payload := createOpenAIChatCompletionsTestPayload(testModelID, prompt)
++	if mode == AccountTestModeOptimizer {
++		payload = createOpenAIOptimizerChatCompletionsTestPayload(testModelID, prompt)
++	}
+ 	payloadBytes, _ := json.Marshal(payload)
+ 
+-	s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
++	testStart := TestEvent{Type: "test_start", Model: testModelID}
++	if mode == AccountTestModeOptimizer {
++		testStart.RequestedModel = requestedModelID
++		testStart.Mode = AccountTestModeOptimizer
++	}
++	s.sendEvent(c, testStart)
+ 	s.sendEvent(c, TestEvent{Type: "status", Text: "正在通过 /v1/chat/completions 测试连接"})
+ 
+ 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(payloadBytes))
+@@ -765,16 +807,27 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
+ 
+ 	if resp.StatusCode != http.StatusOK {
+ 		body, _ := io.ReadAll(resp.Body)
++		var resetAt *time.Time
+ 		if resp.StatusCode == http.StatusTooManyRequests {
+-			s.reconcileOpenAI429State(ctx, account, resp.Header, body)
++			if mode == AccountTestModeOptimizer {
++				resetAt = s.recordOpenAIOptimizer429State(ctx, account, resp.Header, body)
++			} else {
++				resetAt = s.reconcileOpenAI429State(ctx, account, resp.Header, body)
++			}
+ 		}
+-		if resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil {
++		if mode != AccountTestModeOptimizer && resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil {
+ 			errMsg := fmt.Sprintf("Chat Completions authentication failed (401): %s", string(body))
+ 			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
+ 		}
++		if mode == AccountTestModeOptimizer {
++			return s.sendErrorAndEndWithReset(c, fmt.Sprintf("Chat Completions API (/v1/chat/completions) returned %d", resp.StatusCode), resetAt)
++		}
+ 		return s.sendErrorAndEnd(c, fmt.Sprintf("Chat Completions API (/v1/chat/completions) returned %d: %s", resp.StatusCode, string(body)))
+ 	}
+ 
++	if mode == AccountTestModeOptimizer {
++		return s.processOpenAIOptimizerChatCompletionsStream(c, resp.Body)
++	}
+ 	return s.processOpenAIChatCompletionsStream(c, resp.Body)
+ }
+ 
+@@ -890,39 +943,60 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
+ 	return nil
+ }
+ 
+-func (s *AccountTestService) reconcileOpenAI429State(ctx context.Context, account *Account, headers http.Header, body []byte) {
+-	if s == nil || s.accountRepo == nil || account == nil {
+-		return
+-	}
+-
+-	persistOpenAI429PlanType(ctx, s.accountRepo, account, body)
+-
+-	var resetAt *time.Time
++func resolveOpenAI429ResetAt(headers http.Header, body []byte) *time.Time {
+ 	if calculated := calculateOpenAI429ResetTime(headers); calculated != nil {
+-		resetAt = calculated
+-	} else if unixTs := parseOpenAIRateLimitResetTime(body); unixTs != nil {
++		return calculated
++	}
++	if unixTs := parseOpenAIRateLimitResetTime(body); unixTs != nil {
+ 		t := time.Unix(*unixTs, 0)
+-		resetAt = &t
++		return &t
+ 	}
++	return nil
++}
++
++func (s *AccountTestService) recordOpenAI429TemporaryState(ctx context.Context, account *Account, headers http.Header, body []byte) *time.Time {
++	if s == nil || s.accountRepo == nil || account == nil {
++		return nil
++	}
++	resetAt := resolveOpenAI429ResetAt(headers, body)
+ 	if resetAt == nil {
+-		return
++		return nil
+ 	}
+ 
+ 	if err := s.accountRepo.SetRateLimited(ctx, account.ID, *resetAt); err != nil {
+-		return
++		log.Printf("failed to persist optimizer-observed OpenAI 429 reset: account=%d error=%v", account.ID, err)
++		return resetAt
+ 	}
+ 
+ 	now := time.Now()
+ 	account.RateLimitedAt = &now
+ 	account.RateLimitResetAt = resetAt
++	return resetAt
++}
++
++func (s *AccountTestService) recordOpenAIOptimizer429State(ctx context.Context, account *Account, headers http.Header, body []byte) *time.Time {
++	return s.recordOpenAI429TemporaryState(ctx, account, headers, body)
++}
++
++func (s *AccountTestService) reconcileOpenAI429State(ctx context.Context, account *Account, headers http.Header, body []byte) *time.Time {
++	if s == nil || s.accountRepo == nil || account == nil {
++		return nil
++	}
++
++	persistOpenAI429PlanType(ctx, s.accountRepo, account, body)
++	resetAt := s.recordOpenAI429TemporaryState(ctx, account, headers, body)
++	if resetAt == nil {
++		return nil
++	}
+ 
+ 	if account.Status == StatusError {
+ 		if err := s.accountRepo.ClearError(ctx, account.ID); err != nil {
+-			return
++			return resetAt
+ 		}
+ 		account.Status = StatusActive
+ 		account.ErrorMessage = ""
+ 	}
++	return resetAt
+ }
+ 
+ // testGeminiAccountConnection tests a Gemini account's connection
+@@ -1335,6 +1409,38 @@ func createOpenAITestPayload(modelID string, isOAuth bool) map[string]any {
+ 	return payload
+ }
+ 
++func createOpenAIOptimizerTestPayload(modelID string, isOAuth bool, prompt string) map[string]any {
++	testPrompt := strings.TrimSpace(prompt)
++	if testPrompt == "" {
++		testPrompt = "1"
++	}
++
++	payload := map[string]any{
++		"model": modelID,
++		"input": []map[string]any{
++			{
++				"role": "user",
++				"content": []map[string]any{
++					{
++						"type": "input_text",
++						"text": testPrompt,
++					},
++				},
++			},
++		},
++		"instructions":      "Reply with one character.",
++		"max_output_tokens": 1,
++		"reasoning": map[string]any{
++			"effort": "none",
++		},
++		"stream": true,
++	}
++	if isOAuth {
++		payload["store"] = false
++	}
++	return payload
++}
++
+ func createOpenAIChatCompletionsTestPayload(modelID string, prompt string) map[string]any {
+ 	testPrompt := strings.TrimSpace(prompt)
+ 	if testPrompt == "" {
+@@ -1353,6 +1459,13 @@ func createOpenAIChatCompletionsTestPayload(modelID string, prompt string) map[s
+ 	}
+ }
+ 
++func createOpenAIOptimizerChatCompletionsTestPayload(modelID string, prompt string) map[string]any {
++	payload := createOpenAIChatCompletionsTestPayload(modelID, prompt)
++	payload["max_tokens"] = 1
++	payload["reasoning_effort"] = "none"
++	return payload
++}
++
+ // processClaudeStream processes the SSE stream from Claude API
+ func (s *AccountTestService) processClaudeStream(c *gin.Context, body io.Reader) error {
+ 	reader := bufio.NewReader(body)
+@@ -1483,6 +1596,87 @@ func (s *AccountTestService) processOpenAIChatCompletionsStream(c *gin.Context,
+ 	}
+ }
+ 
++func (s *AccountTestService) processOpenAIOptimizerChatCompletionsStream(c *gin.Context, body io.Reader) error {
++	reader := bufio.NewReader(body)
++	for {
++		line, err := reader.ReadString('\n')
++		if err != nil && err != io.EOF {
++			return s.sendErrorAndEnd(c, fmt.Sprintf("Chat Completions stream read error from /v1/chat/completions: %s", err.Error()))
++		}
++
++		line = strings.TrimSpace(line)
++		if line != "" && sseDataPrefix.MatchString(line) {
++			jsonStr := sseDataPrefix.ReplaceAllString(line, "")
++			if jsonStr != "[DONE]" {
++				var data map[string]any
++				if json.Unmarshal([]byte(jsonStr), &data) == nil {
++					if errData, ok := data["error"].(map[string]any); ok {
++						errorMsg := "Chat Completions API (/v1/chat/completions) returned an error"
++						if msg, ok := errData["message"].(string); ok && msg != "" {
++							errorMsg = msg
++						}
++						return s.sendErrorAndEnd(c, fmt.Sprintf("Chat Completions API (/v1/chat/completions) error: %s", errorMsg))
++					}
++					if choices, ok := data["choices"].([]any); ok {
++						for _, choiceValue := range choices {
++							choice, ok := choiceValue.(map[string]any)
++							if !ok {
++								continue
++							}
++							if delta, ok := choice["delta"].(map[string]any); ok {
++								if text, ok := delta["content"].(string); ok && text != "" {
++									s.sendEvent(c, TestEvent{Type: "content", Text: text})
++									return nil
++								}
++							}
++						}
++					}
++				}
++			}
++		}
++
++		if err == io.EOF {
++			return s.sendErrorAndEnd(c, "Chat Completions stream ended before first text token")
++		}
++	}
++}
++
++func (s *AccountTestService) processOpenAIOptimizerStream(c *gin.Context, body io.Reader) error {
++	reader := bufio.NewReader(body)
++	for {
++		line, err := reader.ReadString('\n')
++		if err != nil && err != io.EOF {
++			return s.sendErrorAndEnd(c, fmt.Sprintf("Stream read error: %s", err.Error()))
++		}
++
++		line = strings.TrimSpace(line)
++		if line != "" && sseDataPrefix.MatchString(line) {
++			jsonStr := sseDataPrefix.ReplaceAllString(line, "")
++			if jsonStr != "[DONE]" {
++				var data map[string]any
++				if json.Unmarshal([]byte(jsonStr), &data) == nil {
++					eventType, _ := data["type"].(string)
++					switch eventType {
++					case "response.output_text.delta":
++						if delta, ok := data["delta"].(string); ok && delta != "" {
++							s.sendEvent(c, TestEvent{Type: "content", Text: delta})
++							return nil
++						}
++					case "response.failed":
++						return s.sendErrorAndEnd(c, "OpenAI response failed")
++					case "error":
++						return s.sendErrorAndEnd(c, "OpenAI response returned an error")
++					}
++				}
++			}
++		}
++
++		if err == io.EOF {
++			return s.sendErrorAndEnd(c, "Stream ended before first text token")
++		}
++	}
++}
++
+ // processOpenAIStream processes the SSE stream from OpenAI Responses API
+ func (s *AccountTestService) processOpenAIStream(c *gin.Context, body io.Reader) error {
+ 	reader := bufio.NewReader(body)
+@@ -1756,8 +1950,20 @@ func (s *AccountTestService) sendEvent(c *gin.Context, event TestEvent) {
+ 
+ // sendErrorAndEnd sends an error event and ends the stream
+ func (s *AccountTestService) sendErrorAndEnd(c *gin.Context, errorMsg string) error {
++	return s.sendErrorAndEndWithReset(c, errorMsg, nil)
++}
++
++func (s *AccountTestService) sendErrorAndEndWithReset(c *gin.Context, errorMsg string, resetAt *time.Time) error {
++	return s.sendErrorAndEndWithDetails(c, errorMsg, "", resetAt)
++}
++
++func (s *AccountTestService) sendErrorAndEndWithDetails(c *gin.Context, errorMsg string, code string, resetAt *time.Time) error {
+ 	log.Printf("Account test error: %s", errorMsg)
+-	s.sendEvent(c, TestEvent{Type: "error", Error: errorMsg})
++	event := TestEvent{Type: "error", Error: errorMsg, Code: code}
++	if resetAt != nil {
++		event.ResetAt = resetAt.UTC().Format(time.RFC3339)
++	}
++	s.sendEvent(c, event)
+ 	return fmt.Errorf("%s", errorMsg)
+ }
+ 
+diff --git a/backend/internal/service/account_test_service_openai_test.go b/backend/internal/service/account_test_service_openai_test.go
+index 910567fb25b63b7fe73ef1b6b84e1208b61242e3..52654e712e0d8b8e53095bad3fdd0f8243111082 100644
+--- a/backend/internal/service/account_test_service_openai_test.go
++++ b/backend/internal/service/account_test_service_openai_test.go
+@@ -4,6 +4,7 @@ package service
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"fmt"
+ 	"io"
+ 	"net/http"
+@@ -68,6 +69,7 @@ type openAIAccountTestRepo struct {
+ 	bulkUpdatedPayload AccountBulkUpdate
+ 	rateLimitedID      int64
+ 	rateLimitedAt      *time.Time
++	rateLimitErr       error
+ 	clearedErrorID     int64
+ 	setErrorID         int64
+ 	setErrorMsg        string
+@@ -87,7 +89,7 @@ func (r *openAIAccountTestRepo) BulkUpdate(_ context.Context, ids []int64, updat
+ func (r *openAIAccountTestRepo) SetRateLimited(_ context.Context, id int64, resetAt time.Time) error {
+ 	r.rateLimitedID = id
+ 	r.rateLimitedAt = &resetAt
+-	return nil
++	return r.rateLimitErr
+ }
+ 
+ func (r *openAIAccountTestRepo) ClearError(_ context.Context, id int64) error {
+@@ -162,6 +164,196 @@ func TestAccountTestService_OpenAIStreamEOFBeforeCompletedFails(t *testing.T) {
+ 	require.NotContains(t, recorder.Body.String(), `"success":true`)
+ }
+ 
++func TestAccountTestService_OpenAIOptimizerResponsesProbeIsMinimalAndStopsAtFirstToken(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	ctx, recorder := newTestContext()
++
++	upstream := &httpUpstreamRecorder{resp: &http.Response{
++		StatusCode: http.StatusOK,
++		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
++		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
++			`data: {"type":"response.output_text.delta","delta":"1"}`,
++			"",
++		}, "\n"))),
++	}}
++	svc := &AccountTestService{
++		httpUpstream: upstream,
++		cfg:          &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
++	}
++	account := &Account{
++		ID:          95,
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeAPIKey,
++		Concurrency: 1,
++		Credentials: map[string]any{
++			"api_key":  "sk-test",
++			"base_url": "https://compat-upstream.example/v1",
++			"model_mapping": map[string]any{
++				"gpt-5.6-terra": "gpt-5.6-upstream",
++			},
++		},
++	}
++
++	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.6-terra", "1", AccountTestModeOptimizer)
++	require.NoError(t, err)
++	require.Equal(t, "gpt-5.6-upstream", gjson.GetBytes(upstream.lastBody, "model").String())
++	require.True(t, gjson.GetBytes(upstream.lastBody, "stream").Bool())
++	require.Equal(t, int64(1), gjson.GetBytes(upstream.lastBody, "max_output_tokens").Int())
++	require.Equal(t, "1", gjson.GetBytes(upstream.lastBody, "input.0.content.0.text").String())
++	require.Equal(t, "none", gjson.GetBytes(upstream.lastBody, "reasoning.effort").String())
++	require.LessOrEqual(t, len(gjson.GetBytes(upstream.lastBody, "instructions").String()), 32)
++	require.False(t, gjson.GetBytes(upstream.lastBody, "tools").Exists())
++	require.Contains(t, recorder.Body.String(), `"requested_model":"gpt-5.6-terra"`)
++	require.Contains(t, recorder.Body.String(), `"model":"gpt-5.6-upstream"`)
++	require.Contains(t, recorder.Body.String(), `"type":"content"`)
++	require.NotContains(t, recorder.Body.String(), `"success":true`)
++}
++
++func TestAccountTestService_OpenAIOptimizerRejectsImageModelMappingBeforeRequest(t *testing.T) {
++	ctx, recorder := newTestContext()
++	upstream := &queuedHTTPUpstream{}
++	svc := &AccountTestService{httpUpstream: upstream}
++	account := &Account{
++		ID:          96,
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeAPIKey,
++		Concurrency: 1,
++		Credentials: map[string]any{
++			"api_key": "sk-test",
++			"model_mapping": map[string]any{
++				"gpt-5.6-terra": "gpt-image-2",
++			},
++		},
++	}
++
++	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.6-terra", "1", AccountTestModeOptimizer)
++	require.Error(t, err)
++	require.Empty(t, upstream.requests)
++	require.Contains(t, recorder.Body.String(), `"code":"probe_configuration"`)
++	require.NotContains(t, recorder.Body.String(), `"type":"image"`)
++}
++
++func TestAccountTestService_OpenAIOptimizerOAuthProbeDoesNotPersistQuotaMetadata(t *testing.T) {
++	ctx, _ := newTestContext()
++	resp := newJSONResponse(http.StatusOK, "")
++	resp.Header.Set("x-codex-primary-used-percent", "88")
++	resp.Header.Set("x-codex-secondary-used-percent", "42")
++	resp.Body = io.NopCloser(strings.NewReader("data: {\"type\":\"response.output_text.delta\",\"delta\":\"1\"}\n"))
++
++	repo := &openAIAccountTestRepo{}
++	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
++	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream}
++	account := &Account{
++		ID:          99,
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeOAuth,
++		Concurrency: 1,
++		Credentials: map[string]any{"access_token": "test-token"},
++	}
++
++	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.6-terra", "1", AccountTestModeOptimizer)
++	require.NoError(t, err)
++	require.Empty(t, repo.updatedExtra)
++}
++
++func TestAccountTestService_OpenAIOptimizerAuthenticationFailureDoesNotSetAccountError(t *testing.T) {
++	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
++		t.Run(http.StatusText(status), func(t *testing.T) {
++			ctx, _ := newTestContext()
++			repo := &openAIAccountTestRepo{}
++			upstream := &queuedHTTPUpstream{responses: []*http.Response{
++				newJSONResponse(status, `{"error":{"message":"authentication failed"}}`),
++			}}
++			svc := &AccountTestService{
++				accountRepo:  repo,
++				httpUpstream: upstream,
++				cfg:          &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
++			}
++			account := &Account{
++				ID:          96,
++				Platform:    PlatformOpenAI,
++				Type:        AccountTypeAPIKey,
++				Concurrency: 1,
++				Credentials: map[string]any{
++					"api_key":  "sk-test",
++					"base_url": "https://compat-upstream.example/v1",
++				},
++			}
++
++			err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.6-terra", "1", AccountTestModeOptimizer)
++			require.Error(t, err)
++			require.Zero(t, repo.setErrorID)
++			require.Empty(t, repo.setErrorMsg)
++		})
++	}
++}
++
++func TestAccountTestService_OpenAIOptimizer429OnlyUsesTemporaryRateLimitState(t *testing.T) {
++	ctx, recorder := newTestContext()
++	resp := newJSONResponse(http.StatusTooManyRequests, `{"error":{"type":"usage_limit_reached","plan_type":"free","resets_in_seconds":3600}}`)
++	repo := &openAIAccountTestRepo{}
++	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
++	svc := &AccountTestService{
++		accountRepo:  repo,
++		httpUpstream: upstream,
++		cfg:          &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
++	}
++	account := &Account{
++		ID:           100,
++		Platform:     PlatformOpenAI,
++		Type:         AccountTypeAPIKey,
++		Status:       StatusError,
++		ErrorMessage: "administrator disabled after credential review",
++		Concurrency:  1,
++		Credentials: map[string]any{
++			"api_key":   "sk-test",
++			"base_url":  "https://compat-upstream.example/v1",
++			"plan_type": "plus",
++		},
++	}
++
++	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.6-terra", "1", AccountTestModeOptimizer)
++	require.Error(t, err)
++	require.Equal(t, account.ID, repo.rateLimitedID)
++	require.NotNil(t, repo.rateLimitedAt)
++	require.Empty(t, repo.bulkUpdatedIDs)
++	require.Zero(t, repo.clearedErrorID)
++	require.Zero(t, repo.setErrorID)
++	require.Equal(t, StatusError, account.Status)
++	require.Equal(t, "administrator disabled after credential review", account.ErrorMessage)
++	require.Equal(t, "plus", account.Credentials["plan_type"])
++	require.Contains(t, recorder.Body.String(), `"reset_at":"`)
++}
++
++func TestAccountTestService_OpenAIOptimizer429ReturnsResetWhenPersistenceFails(t *testing.T) {
++	ctx, recorder := newTestContext()
++	resp := newJSONResponse(http.StatusTooManyRequests, `{"error":{"type":"usage_limit_reached","resets_in_seconds":3600}}`)
++	repo := &openAIAccountTestRepo{rateLimitErr: errors.New("database unavailable")}
++	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
++	svc := &AccountTestService{
++		accountRepo:  repo,
++		httpUpstream: upstream,
++		cfg:          &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
++	}
++	account := &Account{
++		ID:          101,
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeAPIKey,
++		Concurrency: 1,
++		Credentials: map[string]any{
++			"api_key":  "sk-test",
++			"base_url": "https://compat-upstream.example/v1",
++		},
++	}
++
++	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.6-terra", "1", AccountTestModeOptimizer)
++	require.Error(t, err)
++	require.Equal(t, account.ID, repo.rateLimitedID)
++	require.NotNil(t, repo.rateLimitedAt)
++	require.Nil(t, account.RateLimitResetAt)
++	require.Contains(t, recorder.Body.String(), `"reset_at":"`)
++}
++
+ func TestAccountTestService_OpenAI429PersistsSnapshotAndRateLimitState(t *testing.T) {
+ 	gin.SetMode(gin.TestMode)
+ 	ctx, _ := newTestContext()
+@@ -389,6 +581,75 @@ func TestAccountTestService_OpenAIAPIKeyResponsesUnsupportedUsesChatCompletionsP
+ 	require.NotContains(t, body, "当前测试接口仅支持 Responses API 路径")
+ }
+ 
++func TestAccountTestService_OpenAIOptimizerChatCompletionsProbeIsMinimalAndStopsAtFirstToken(t *testing.T) {
++	ctx, recorder := newTestContext()
++	upstream := &httpUpstreamRecorder{resp: &http.Response{
++		StatusCode: http.StatusOK,
++		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
++		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
++			`data: {"id":"chatcmpl_test","choices":[{"delta":{"content":"1"},"finish_reason":null}]}`,
++			"",
++		}, "\n"))),
++	}}
++	svc := &AccountTestService{
++		httpUpstream: upstream,
++		cfg:          &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
++	}
++	account := &Account{
++		ID:          97,
++		Platform:    PlatformOpenAI,
++		Type:        AccountTypeAPIKey,
++		Concurrency: 1,
++		Credentials: map[string]any{
++			"api_key":  "sk-test",
++			"base_url": "https://compat-upstream.example/v1",
++		},
++		Extra: map[string]any{openai_compat.ExtraKeyResponsesSupported: false},
++	}
++
++	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.6-terra", "1", AccountTestModeOptimizer)
++	require.NoError(t, err)
++	require.Equal(t, "https://compat-upstream.example/v1/chat/completions", upstream.lastReq.URL.String())
++	require.Equal(t, "gpt-5.6-terra", gjson.GetBytes(upstream.lastBody, "model").String())
++	require.True(t, gjson.GetBytes(upstream.lastBody, "stream").Bool())
++	require.Equal(t, int64(1), gjson.GetBytes(upstream.lastBody, "max_tokens").Int())
++	require.Equal(t, "none", gjson.GetBytes(upstream.lastBody, "reasoning_effort").String())
++	require.Equal(t, "1", gjson.GetBytes(upstream.lastBody, "messages.0.content").String())
++	require.Contains(t, recorder.Body.String(), `"type":"content"`)
++	require.NotContains(t, recorder.Body.String(), `"success":true`)
++}
++
++func TestAccountTestService_OpenAIOptimizerChatCompletionsAuthenticationFailureDoesNotSetAccountError(t *testing.T) {
++	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
++		t.Run(http.StatusText(status), func(t *testing.T) {
++			ctx, _ := newTestContext()
++			repo := &openAIAccountTestRepo{}
++			upstream := &httpUpstreamRecorder{resp: newJSONResponse(status, `{"error":{"message":"authentication failed"}}`)}
++			svc := &AccountTestService{
++				accountRepo:  repo,
++				httpUpstream: upstream,
++				cfg:          &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
++			}
++			account := &Account{
++				ID:          98,
++				Platform:    PlatformOpenAI,
++				Type:        AccountTypeAPIKey,
++				Concurrency: 1,
++				Credentials: map[string]any{
++					"api_key":  "sk-test",
++					"base_url": "https://compat-upstream.example/v1",
++				},
++				Extra: map[string]any{openai_compat.ExtraKeyResponsesSupported: false},
++			}
++
++			err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.6-terra", "1", AccountTestModeOptimizer)
++			require.Error(t, err)
++			require.Zero(t, repo.setErrorID)
++			require.Empty(t, repo.setErrorMsg)
++		})
++	}
++}
++
+ func TestAccountTestService_OpenAIChatCompletionsPathReturns4xx(t *testing.T) {
+ 	gin.SetMode(gin.TestMode)
+ 	ctx, recorder := newTestContext()
+diff --git a/backend/internal/service/openai_compact_probe.go b/backend/internal/service/openai_compact_probe.go
+index e8deff2d6d5a99cb15e42c9045a1f72a5df836eb..d61b5dd8272b6aef735928af093de2f3d3eac91e 100644
+--- a/backend/internal/service/openai_compact_probe.go
++++ b/backend/internal/service/openai_compact_probe.go
+@@ -12,12 +12,14 @@ const (
+ 	AccountTestModeDefault = "default"
+ 	// AccountTestModeCompact drives the /responses/compact compact-probe test.
+ 	AccountTestModeCompact = "compact"
++	// AccountTestModeOptimizer drives a side-effect-safe minimal text probe.
++	AccountTestModeOptimizer = "optimizer"
+ )
+ 
+ func normalizeAccountTestMode(mode string) string {
+ 	switch strings.ToLower(strings.TrimSpace(mode)) {
+-	case AccountTestModeCompact:
+-		return AccountTestModeCompact
++	case AccountTestModeCompact, AccountTestModeOptimizer:
++		return strings.ToLower(strings.TrimSpace(mode))
+ 	default:
+ 		return AccountTestModeDefault
+ 	}
+diff --git a/backend/internal/service/openai_compact_probe_test.go b/backend/internal/service/openai_compact_probe_test.go
+index fe3ba0e8d1d3f33744ce69fe9470a05db9ad63bc..0cd70614a072eb1e891881dd21ea7aea273611f1 100644
+--- a/backend/internal/service/openai_compact_probe_test.go
++++ b/backend/internal/service/openai_compact_probe_test.go
+@@ -16,6 +16,8 @@ func TestNormalizeAccountTestMode(t *testing.T) {
+ 		{input: "default", want: AccountTestModeDefault},
+ 		{input: " compact ", want: AccountTestModeCompact},
+ 		{input: "COMPACT", want: AccountTestModeCompact},
++		{input: " optimizer ", want: AccountTestModeOptimizer},
++		{input: "OPTIMIZER", want: AccountTestModeOptimizer},
+ 		{input: "unknown", want: AccountTestModeDefault},
+ 	}
+ 
