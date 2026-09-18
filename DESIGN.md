@@ -15,7 +15,7 @@ contribute multiple failures in a round.
 A dry-run creates an immutable `deployment-baseline.json`. The first non-dry-run cycle separately
 captures `activation-baseline.json` before any mutation. Rollback uses only that activation
 baseline. Newly discovered target accounts are appended before their first possible mutation;
-existing entries are never rewritten. In Sub2API `0.1.141`, `load_factor=0` is the documented API
+existing entries are never rewritten. In Sub2API `0.2.5`, `load_factor=0` is the documented API
 encoding that clears the stored value back to SQL `NULL`.
 
 ## Ranking
@@ -63,14 +63,13 @@ error-rate EWMA, and TTFT EWMA. Previous-response and session affinity remain se
 layers. The external optimizer provides health probes and slow baseline adjustments; it does not
 attempt request-by-request scheduling.
 
-In Sub2API `0.1.141`, only the enable flag is database-backed. Score weights and sticky escape
+In Sub2API `0.2.5`, only the enable flag is treated as database-backed by this adapter. Score weights and sticky escape
 thresholds are startup configuration. Weight changes therefore require a backed-up configuration
 change, Sub2API restart, health verification, and file rollback.
 
 ## Compatibility And Limitations
 
-The included patch is based on and tested against Sub2API `0.1.141`, commit
-`7cb98e5bdca776d643d284aa2f4ce7151308819e`. It adds `mode: optimizer` to the targeted account test
+The included patch is ported to and reviewed against Sub2API `0.2.5`. It adds `mode: optimizer` to the targeted account test
 endpoint. This mode sends a one-character prompt, caps output at one token, stops after the first
 valid text delta, avoids permanent account-error and successful-test recovery side effects, and
 preserves the existing temporary 429 limiter. Do not enable active probes unless the capability

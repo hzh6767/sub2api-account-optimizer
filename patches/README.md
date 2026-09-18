@@ -1,10 +1,10 @@
 # Sub2API Patch
 
-`sub2api-0.1.141-optimizer.patch` is generated from:
+`sub2api-0.2.5-optimizer.patch` is generated for:
 
-- Base: `7cb98e5bdca776d643d284aa2f4ce7151308819e`
-- Patched commit: `6d321215b652ad607ecedc3cf11b9dfdecd0f020`
+- Version: `0.2.5` (`backend/cmd/server/VERSION`)
+- Scope: account-test `mode=optimizer` handshake and minimal-token SSE probe
 
 It adds the safety handshake and minimal-token behavior required by targeted optimizer probes.
 Run `git apply --check` against the exact base before applying it. Review and port the change
-manually for any other Sub2API version.
+manually for any other Sub2API version. The older `sub2api-0.1.141-optimizer.patch` file is retained as a historical archive only.

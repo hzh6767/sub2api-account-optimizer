@@ -1,6 +1,6 @@
 services:
   sub2api:
-    image: "${SUB2API_OPTIMIZER_IMAGE:-sub2api:0.1.141-account-optimizer}"
+    image: "${SUB2API_OPTIMIZER_IMAGE:-sub2api:0.2.5-account-optimizer}"
     environment:
       GATEWAY_OPENAI_WS_SCHEDULER_SCORE_WEIGHTS_PRIORITY: "${OPENAI_SCHEDULER_PRIORITY_WEIGHT:-0.6}"
       GATEWAY_OPENAI_WS_SCHEDULER_SCORE_WEIGHTS_LOAD: "${OPENAI_SCHEDULER_LOAD_WEIGHT:-1.0}"

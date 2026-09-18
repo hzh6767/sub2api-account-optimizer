@@ -305,7 +305,7 @@ class OptimizerEngine:
                 "runtime_weights": None,
                 "runtime_weights_verified": False,
                 "runtime_weight_verification": (
-                    "Sub2API 0.1.141 does not expose scheduler weights through "
+                    "Sub2API 0.2.5 does not expose scheduler weights through "
                     "the administrator API; verify the running container environment"
                 ),
                 "declared_deployment_weights": {

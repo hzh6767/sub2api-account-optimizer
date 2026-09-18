@@ -233,7 +233,7 @@ python -m unittest discover -s tests -v
 
 - 历史使用记录没有工具调用标记，因此无法百分之百排除历史纯工具调用请求。
 - 主动探测依赖本仓库补丁提供的 `mode: optimizer` 握手。
-- 高级调度器权重在 Sub2API `0.1.141` 中是启动配置，修改会重启 Sub2API。
+- 高级调度器权重按 Sub2API `0.2.5` 的运行配置和接口能力处理，修改前应先完成备份与验证。
 - 本项目不会替你判断某个第三方上游的服务条款或账号共享限制。
 
 ## English Summary
@@ -242,8 +242,7 @@ This project is a safety-first OpenAI account health and slow baseline scheduler
 Sub2API. It combines 24-hour real-traffic TTFT/error telemetry with low-token targeted probes,
 keeps groups and models isolated, caps load factor by real concurrency, and applies changes only
 after stability, cooldown, and ownership checks. All mutation and active-probe gates are disabled
-by default. The included Sub2API patch is tested only against version `0.1.141` at commit
-`7cb98e5bdca776d643d284aa2f4ce7151308819e`.
+by default. The included Sub2API patch is ported and reviewed against version `0.2.5`.
 
 ## License
 
