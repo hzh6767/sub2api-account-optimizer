@@ -10,6 +10,7 @@
 > 默认配置不会修改账号，也不会主动发起上游请求。请先阅读兼容性说明并完成 dry-run。
 > 本项目包含的 Sub2API 补丁已按 `0.2.5` 源码重新移植并完成静态差异检查。
 
+
 ## 能做什么
 
 - 动态读取一个或多个 OpenAI 分组，不写死账号 ID。
@@ -32,6 +33,7 @@
 - 上游项目：[Wei-Shaw/sub2api](https://github.com/Wei-Shaw/sub2api)
 - 版本：`0.2.5`（`backend/cmd/server/VERSION`）
 - 补丁范围：管理员账号测试 SSE 的 `mode=optimizer` 兼容层
+
 
 补丁为 `/api/v1/admin/accounts/:id/test` 增加 `mode: optimizer` 安全握手和最小输出逻辑。
 不要把该补丁直接用于其他版本；升级 Sub2API 后应重新审查并移植补丁。
@@ -64,6 +66,7 @@ OPTIMIZER_TARGETED_TEST_SAFE=false
    cd /opt/sub2api
    git rev-parse HEAD
    # 预期版本：0.2.5
+
    ```
 
 2. 检查并应用补丁：
@@ -72,6 +75,7 @@ OPTIMIZER_TARGETED_TEST_SAFE=false
    git apply --check account-optimizer/patches/sub2api-0.2.5-optimizer.patch
    git apply account-optimizer/patches/sub2api-0.2.5-optimizer.patch
    docker build -t sub2api:0.2.5-account-optimizer .
+
    ```
 
 3. 构建优化器，不启动正式服务：
