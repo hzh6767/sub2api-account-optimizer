@@ -1,0 +1,15 @@
+Sub2API Account Optimizer
+
+Copyright (C) 2026 hzh20070706-gif
+
+The patch under patches/ contains modifications derived from Sub2API:
+https://github.com/Wei-Shaw/sub2api
+
+Upstream baseline:
+7cb98e5bdca776d643d284aa2f4ce7151308819e
+
+Modified source commit:
+6d321215b652ad607ecedc3cf11b9dfdecd0f020
+
+Sub2API is distributed under the GNU Lesser General Public License version 3.
+The optimizer and the included patch are distributed under the same license.

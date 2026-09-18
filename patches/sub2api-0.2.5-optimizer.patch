@@ -1,0 +1,306 @@
+diff --git a/backend/internal/handler/admin/account_handler.go b/backend/internal/handler/admin/account_handler.go
+index f97dc48..9e1659c 100644
+--- a/backend/internal/handler/admin/account_handler.go
++++ b/backend/internal/handler/admin/account_handler.go
+@@ -1265,6 +1265,10 @@ type PreviewFromCRSRequest struct {
+ 	Password string `json:"password" binding:"required"`
+ }
+ 
++func shouldRecoverAfterAccountTest(mode string) bool {
++	return !strings.EqualFold(strings.TrimSpace(mode), service.AccountTestModeOptimizer)
++}
++
+ // Test handles testing account connectivity with SSE streaming
+ // POST /api/v1/admin/accounts/:id/test
+ func (h *AccountHandler) Test(c *gin.Context) {
+@@ -1289,7 +1293,7 @@ func (h *AccountHandler) Test(c *gin.Context) {
+ 		return
+ 	}
+ 
+-	if h.rateLimitService != nil {
++	if h.rateLimitService != nil && shouldRecoverAfterAccountTest(req.Mode) {
+ 		if _, err := h.rateLimitService.RecoverAccountAfterSuccessfulTest(c.Request.Context(), accountID); err != nil {
+ 			_ = c.Error(err)
+ 		}
+diff --git a/backend/internal/service/account_test_service.go b/backend/internal/service/account_test_service.go
+index b56861e..ae18438 100644
+--- a/backend/internal/service/account_test_service.go
++++ b/backend/internal/service/account_test_service.go
+@@ -50,9 +50,11 @@ const (
+ 
+ // TestEvent represents a SSE event for account testing
+ type TestEvent struct {
+-	Type     string `json:"type"`
+-	Text     string `json:"text,omitempty"`
+-	Model    string `json:"model,omitempty"`
++	Type           string `json:"type"`
++	Text           string `json:"text,omitempty"`
++	Model          string `json:"model,omitempty"`
++	RequestedModel string `json:"requested_model,omitempty"`
++	Mode           string `json:"mode,omitempty"`
+ 	Status   string `json:"status,omitempty"`
+ 	Code     string `json:"code,omitempty"`
+ 	ImageURL string `json:"image_url,omitempty"`
+@@ -63,6 +65,7 @@ type TestEvent struct {
+ 	Data     any    `json:"data,omitempty"`
+ 	Success  bool   `json:"success,omitempty"`
+ 	Error    string `json:"error,omitempty"`
++	ResetAt  string `json:"reset_at,omitempty"`
+ }
+ 
+ // AccountTestOptions carries optional media for admin connectivity tests.
+@@ -453,7 +456,7 @@ func (s *AccountTestService) testCNProviderChatCompletionsConnection(c *gin.Cont
+ 		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
+ 	}
+ 
+-	return s.testOpenAIChatCompletionsConnection(c, account, testModelID, prompt, normalizedBaseURL, authToken)
++	return s.testOpenAIChatCompletionsConnection(c, account, testModelID, testModelID, prompt, normalizedBaseURL, authToken, AccountTestModeDefault)
+ }
+ 
+ // testClaudeAccountConnection tests an Anthropic Claude account's connection
+@@ -758,16 +761,20 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
+ 	mode = normalizeAccountTestMode(mode)
+ 
+ 	// Default to openai.DefaultTestModel for OpenAI testing
+-	testModelID := modelID
+-	if testModelID == "" {
+-		testModelID = openai.DefaultTestModel
++	requestedModelID := modelID
++	if requestedModelID == "" {
++		requestedModelID = openai.DefaultTestModel
+ 	}
++	testModelID := requestedModelID
+ 
+ 	// Align test routing with gateway behavior: OpenAI accounts apply normal
+ 	// account model mapping. Native remote compaction v2 rides the ordinary
+ 	// /responses wire and does NOT apply the legacy compact-only mapping
+ 	// (post-#5641 semantics: compact_model_mapping is /responses/compact-only).
+ 	testModelID = account.GetMappedModel(testModelID)
++	if mode == AccountTestModeOptimizer && isOpenAIImageModel(testModelID) {
++		return s.sendErrorAndEndWithDetails(c, "optimizer mode only supports ordinary text models", "probe_configuration")
++	}
+ 	if mode == AccountTestModeCompact {
+ 		return s.testOpenAICompactConnection(c, account, testModelID)
+ 	}
+@@ -826,7 +833,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
+ 			return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
+ 		}
+ 		if !openai_compat.ShouldUseResponsesAPI(account.Extra) {
+-			return s.testOpenAIChatCompletionsConnection(c, account, testModelID, prompt, normalizedBaseURL, authToken)
++			return s.testOpenAIChatCompletionsConnection(c, account, requestedModelID, testModelID, prompt, normalizedBaseURL, authToken, mode)
+ 		}
+ 		apiURL = buildOpenAIResponsesURLForPlatform(credentialAccount.Platform, normalizedBaseURL)
+ 	} else {
+@@ -847,12 +854,20 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
+ 		upstreamTestModelID = normalizeOpenAIModelForUpstream(credentialAccount, testModelID)
+ 	}
+ 	payload := createOpenAITestPayload(upstreamTestModelID, isOAuth)
++	if mode == AccountTestModeOptimizer {
++		payload = createOpenAIOptimizerTestPayload(upstreamTestModelID, isOAuth, prompt)
++	}
+ 	payloadBytes, _ := json.Marshal(payload)
+ 
+ 	// Send test_start event once. A task-invalid Agent Identity response may
+ 	// restart this probe after registering a replacement task.
+ 	if !agentIdentityTaskRecoveryWasTried(ctx) {
+-		s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
++		testStart := TestEvent{Type: "test_start", Model: testModelID}
++		if mode == AccountTestModeOptimizer {
++			testStart.RequestedModel = requestedModelID
++			testStart.Mode = AccountTestModeOptimizer
++		}
++		s.sendEvent(c, testStart)
+ 	}
+ 
+ 	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(payloadBytes))
+@@ -913,7 +928,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
+ 	}
+ 	defer func() { _ = resp.Body.Close() }()
+ 
+-	if isOAuth && s.accountRepo != nil {
++	if mode != AccountTestModeOptimizer && isOAuth && s.accountRepo != nil {
+ 		if updates, err := extractOpenAICodexProbeUpdates(resp); err == nil && len(updates) > 0 {
+ 			_ = s.accountRepo.UpdateExtra(ctx, account.ID, updates)
+ 			mergeAccountExtra(account, updates)
+@@ -931,18 +946,24 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
+ 			c.Request = c.Request.WithContext(markAgentIdentityTaskRecoveryTried(ctx))
+ 			return s.testOpenAIAccountConnection(c, account, modelID, prompt, mode)
+ 		}
+-		if resp.StatusCode == http.StatusTooManyRequests {
++		if resp.StatusCode == http.StatusTooManyRequests && mode != AccountTestModeOptimizer {
+ 			s.reconcileOpenAI429State(ctx, account, resp.Header, body)
+ 		}
+ 		// 401 Unauthorized: 标记账号为永久错误
+-		if resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil {
++		if mode != AccountTestModeOptimizer && resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil {
+ 			errMsg := fmt.Sprintf("Authentication failed (401): %s", string(body))
+ 			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
+ 		}
++		if mode == AccountTestModeOptimizer {
++			return s.sendErrorAndEndWithDetails(c, fmt.Sprintf("API returned %d", resp.StatusCode), "")
++		}
+ 		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
+ 	}
+ 
+ 	// Process SSE stream
++	if mode == AccountTestModeOptimizer {
++		return s.processOpenAIOptimizerStream(c, resp.Body)
++	}
+ 	return s.processOpenAIStream(c, resp.Body)
+ }
+ 
+@@ -2074,10 +2095,12 @@ func minimalSilentWAV() []byte {
+ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
+ 	c *gin.Context,
+ 	account *Account,
++	requestedModelID string,
+ 	testModelID string,
+ 	prompt string,
+ 	normalizedBaseURL string,
+ 	authToken string,
++	mode string,
+ ) error {
+ 	ctx := c.Request.Context()
+ 	apiURL := buildOpenAIChatCompletionsURL(normalizedBaseURL)
+@@ -2089,9 +2112,17 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
+ 	c.Writer.Flush()
+ 
+ 	payload := createOpenAIChatCompletionsTestPayload(testModelID, prompt)
++	if mode == AccountTestModeOptimizer {
++		payload = createOpenAIOptimizerChatCompletionsTestPayload(testModelID, prompt)
++	}
+ 	payloadBytes, _ := json.Marshal(payload)
+ 
+-	s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
++	testStart := TestEvent{Type: "test_start", Model: testModelID}
++	if mode == AccountTestModeOptimizer {
++		testStart.RequestedModel = requestedModelID
++		testStart.Mode = AccountTestModeOptimizer
++	}
++	s.sendEvent(c, testStart)
+ 	s.sendEvent(c, TestEvent{Type: "status", Text: "正在通过 /v1/chat/completions 测试连接"})
+ 
+ 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(payloadBytes))
+@@ -2120,16 +2151,22 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
+ 
+ 	if resp.StatusCode != http.StatusOK {
+ 		body, _ := io.ReadAll(resp.Body)
+-		if resp.StatusCode == http.StatusTooManyRequests {
++		if resp.StatusCode == http.StatusTooManyRequests && mode != AccountTestModeOptimizer {
+ 			s.reconcileOpenAI429State(ctx, account, resp.Header, body)
+ 		}
+-		if resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil {
++		if mode != AccountTestModeOptimizer && resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil {
+ 			errMsg := fmt.Sprintf("Chat Completions authentication failed (401): %s", string(body))
+ 			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
+ 		}
++		if mode == AccountTestModeOptimizer {
++			return s.sendErrorAndEnd(c, fmt.Sprintf("Chat Completions API (/v1/chat/completions) returned %d", resp.StatusCode))
++		}
+ 		return s.sendErrorAndEnd(c, fmt.Sprintf("Chat Completions API (/v1/chat/completions) returned %d: %s", resp.StatusCode, string(body)))
+ 	}
+ 
++	if mode == AccountTestModeOptimizer {
++		return s.processOpenAIOptimizerChatCompletionsStream(c, resp.Body)
++	}
+ 	return s.processOpenAIChatCompletionsStream(c, resp.Body)
+ }
+ 
+@@ -2753,6 +2790,14 @@ func createOpenAITestPayload(modelID string, isOAuth bool) map[string]any {
+ 	return payload
+ }
+ 
++func createOpenAIOptimizerTestPayload(modelID string, isOAuth bool, prompt string) map[string]any {
++	t := strings.TrimSpace(prompt)
++	if t == "" { t = "1" }
++	p := map[string]any{"model": modelID, "input": []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": t}}}}, "instructions": "Reply with one character.", "max_output_tokens": 1, "reasoning": map[string]any{"effort": "none"}, "stream": true}
++	if isOAuth { p["store"] = false }
++	return p
++}
++
+ func createOpenAIChatCompletionsTestPayload(modelID string, prompt string) map[string]any {
+ 	testPrompt := strings.TrimSpace(prompt)
+ 	if testPrompt == "" {
+@@ -2771,6 +2816,47 @@ func createOpenAIChatCompletionsTestPayload(modelID string, prompt string) map[s
+ 	}
+ }
+ 
++func createOpenAIOptimizerChatCompletionsTestPayload(modelID string, prompt string) map[string]any {
++	p := createOpenAIChatCompletionsTestPayload(modelID, prompt)
++	p["max_tokens"] = 1
++	p["reasoning_effort"] = "none"
++	return p
++}
++
++func (s *AccountTestService) processOpenAIOptimizerChatCompletionsStream(c *gin.Context, body io.Reader) error {
++	r := bufio.NewReader(body)
++	for {
++		line, err := r.ReadString('\n')
++		if err != nil && err != io.EOF { return s.sendErrorAndEnd(c, "Chat Completions stream read error") }
++		line = strings.TrimSpace(line)
++		if line != "" && sseDataPrefix.MatchString(line) {
++			dataText := sseDataPrefix.ReplaceAllString(line, "")
++			if dataText != "[DONE]" {
++				var data map[string]any
++				if json.Unmarshal([]byte(dataText), &data) == nil {
++					if e, ok := data["error"].(map[string]any); ok { if msg, ok := e["message"].(string); ok && msg != "" { return s.sendErrorAndEnd(c, msg) }; return s.sendErrorAndEnd(c, "Chat Completions API returned an error") }
++					if choices, ok := data["choices"].([]any); ok { for _, v := range choices { if ch, ok := v.(map[string]any); ok { if d, ok := ch["delta"].(map[string]any); ok { if t, ok := d["content"].(string); ok && t != "" { s.sendEvent(c, TestEvent{Type:"content", Text:t}); return nil } } } } }
++				}
++			}
++		}
++		if err == io.EOF { return s.sendErrorAndEnd(c, "Chat Completions stream ended before first text token") }
++	}
++}
++
++func (s *AccountTestService) processOpenAIOptimizerStream(c *gin.Context, body io.Reader) error {
++	r := bufio.NewReader(body)
++	for {
++		line, err := r.ReadString('\n')
++		if err != nil && err != io.EOF { return s.sendErrorAndEnd(c, "Stream read error") }
++		line = strings.TrimSpace(line)
++		if line != "" && sseDataPrefix.MatchString(line) {
++			dataText := sseDataPrefix.ReplaceAllString(line, "")
++			if dataText != "[DONE]" { var data map[string]any; if json.Unmarshal([]byte(dataText), &data) == nil { typ, _ := data["type"].(string); if typ == "response.output_text.delta" { if t, ok := data["delta"].(string); ok && t != "" { s.sendEvent(c, TestEvent{Type:"content", Text:t}); return nil } }; if typ == "error" || typ == "response.failed" { return s.sendErrorAndEnd(c, "OpenAI response returned an error") } } }
++		}
++		if err == io.EOF { return s.sendErrorAndEnd(c, "Stream ended before first text token") }
++	}
++}
++
+ // processClaudeStream processes the SSE stream from Claude API
+ func (s *AccountTestService) processClaudeStream(c *gin.Context, body io.Reader) error {
+ 	reader := bufio.NewReader(body)
+@@ -3237,8 +3323,12 @@ func (s *AccountTestService) sendEvent(c *gin.Context, event TestEvent) {
+ 
+ // sendErrorAndEnd sends an error event and ends the stream
+ func (s *AccountTestService) sendErrorAndEnd(c *gin.Context, errorMsg string) error {
++	return s.sendErrorAndEndWithDetails(c, errorMsg, "", nil)
++}
++
++func (s *AccountTestService) sendErrorAndEndWithDetails(c *gin.Context, errorMsg, code string) error {
+ 	log.Printf("Account test error: %s", errorMsg)
+-	s.sendEvent(c, TestEvent{Type: "error", Error: errorMsg})
++	s.sendEvent(c, TestEvent{Type: "error", Error: errorMsg, Code: code})
+ 	return fmt.Errorf("%s", errorMsg)
+ }
+ 
+diff --git a/backend/internal/service/openai_compact_probe.go b/backend/internal/service/openai_compact_probe.go
+index 9d5e8cc..85a7303 100644
+--- a/backend/internal/service/openai_compact_probe.go
++++ b/backend/internal/service/openai_compact_probe.go
+@@ -13,12 +13,14 @@ const (
+ 	// AccountTestModeCompact drives the remote-compaction probe test
+ 	// (native v2: streaming /responses with a compaction_trigger input item).
+ 	AccountTestModeCompact = "compact"
++	// AccountTestModeOptimizer drives a side-effect-safe minimal text probe.
++	AccountTestModeOptimizer = "optimizer"
+ )
+ 
+ func normalizeAccountTestMode(mode string) string {
+ 	switch strings.ToLower(strings.TrimSpace(mode)) {
+-	case AccountTestModeCompact:
+-		return AccountTestModeCompact
++	case AccountTestModeCompact, AccountTestModeOptimizer:
++		return strings.ToLower(strings.TrimSpace(mode))
+ 	default:
+ 		return AccountTestModeDefault
+ 	}

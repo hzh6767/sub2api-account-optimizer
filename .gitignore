@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.coverage
+.pytest_cache/
+.ruff_cache/
+.venv/
+.env
+activation.env
+logs/*
+!logs/.gitkeep
+state/*
+!state/.gitkeep
+backups/*
+!backups/.gitkeep
+secrets/*
+!secrets/.gitkeep
