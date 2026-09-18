@@ -2,13 +2,17 @@
 
 [![CI](https://github.com/hzh20070706-gif/sub2api-account-optimizer/actions/workflows/ci.yml/badge.svg)](https://github.com/hzh20070706-gif/sub2api-account-optimizer/actions/workflows/ci.yml)
 
-面向 Sub2API 的 OpenAI 账号健康探测与慢速调度基线优化器。它优先使用真实请求的首字
-延迟和错误率，只在样本不足或账号异常时执行最低 Token 的指定账号探测，并以防抖、
-冷却和所有权规则调整 `priority`、`load_factor` 与 `schedulable`。
+Sub2API Account Optimizer 是一个面向 Sub2API 的 OpenAI 账号健康探测与调度优化器。
+它优先分析真实请求的首字延迟、错误率和超时率，仅在样本不足或账号异常时执行低成本的
+指定账号探测，再通过防抖、冷却和所有权规则平滑调整 `priority`、`load_factor` 与
+`schedulable`。
+
+项目定位是“可审计、可回滚、默认只读”的运维组件：先 dry-run 观察结果，再按需开启主动探测
+和调度写入，不要求修改账号凭据或把账号 ID 写死在配置中。
 
 > [!IMPORTANT]
 > 默认配置不会修改账号，也不会主动发起上游请求。请先阅读兼容性说明并完成 dry-run。
-> 本项目包含的 Sub2API 补丁已按 `0.2.5` 源码重新移植并完成静态差异检查。
+> 本项目当前兼容 Sub2API `0.2.5`，补丁用于增加安全的 `mode=optimizer` 最小输出探测。
 
 
 ## 能做什么
@@ -23,7 +27,7 @@
 - 只恢复由优化器明确停用的账号，管理员手动停用的账号不会被自动恢复。
 - 提供单实例锁、轮次超时、健康检查、JSON 审计日志、状态查看和回滚。
 
-详细状态机和评分规则见 [DESIGN.md](DESIGN.md)。
+详细状态机、评分规则和回滚边界见 [DESIGN.md](DESIGN.md)。
 
 ## 兼容性
 
