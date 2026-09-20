@@ -1,6 +1,6 @@
 # Sub2API Account Optimizer
 
-[![CI](https://github.com/hzh20070706-gif/sub2api-account-optimizer/actions/workflows/ci.yml/badge.svg)](https://github.com/hzh20070706-gif/sub2api-account-optimizer/actions/workflows/ci.yml)
+[![CI](https://github.com/hzh6767/sub2api-account-optimizer/actions/workflows/ci.yml/badge.svg)](https://github.com/hzh6767/sub2api-account-optimizer/actions/workflows/ci.yml)
 
 Sub2API Account Optimizer 是一个面向 Sub2API 的 OpenAI 账号健康探测与调度优化器。
 它优先分析真实请求的首字延迟、错误率和超时率，仅在样本不足或账号异常时执行低成本的
