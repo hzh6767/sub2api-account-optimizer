@@ -6,16 +6,17 @@ import os
 import signal
 import sys
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
 
 from .api import AdminAPI
 from .config import Config
 from .database import Database
 from .domain import RoundTimeoutError
 from .engine import OptimizerEngine, scheduling_rollback_mutations
+from .errors import RedactedError, redacted_errors
 from .health import dependency_health
 from .mutations import MutationExecutor
 from .storage import JsonStore, sanitize
@@ -121,7 +122,7 @@ def _load_json(path: Path) -> dict[str, object]:
     with path.open("r", encoding="utf-8") as handle:
         value = json.load(handle)
     if not isinstance(value, dict):
-        raise ValueError(f"expected JSON object in {path}")
+        raise TypeError(f"expected JSON object in {path}")
     return value
 
 
@@ -173,15 +174,19 @@ def _daemon(config: Config, engine: OptimizerEngine) -> int:
     while not stopping:
         cycle_started = time.monotonic()
         try:
-            with round_timeout(config.round_timeout_seconds):
-                report = engine.run(dry_run=False)
-            print(
-                json.dumps(_summary(report), ensure_ascii=True, sort_keys=True),
-                flush=True,
+            with redacted_errors():
+                with round_timeout(config.round_timeout_seconds):
+                    report = engine.run(dry_run=False)
+                print(
+                    json.dumps(_summary(report), ensure_ascii=True, sort_keys=True),
+                    flush=True,
+                )
+        except (RedactedError, RoundTimeoutError) as exc:
+            error_type = (
+                exc.error_type if isinstance(exc, RedactedError) else type(exc).__name__
             )
-        except Exception as exc:
             print(
-                json.dumps({"status": "error", "error_type": type(exc).__name__}),
+                json.dumps({"status": "error", "error_type": error_type}),
                 file=sys.stderr,
                 flush=True,
             )

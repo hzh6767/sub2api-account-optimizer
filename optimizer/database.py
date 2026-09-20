@@ -7,7 +7,6 @@ from typing import Any
 from .config import Config
 from .domain import Account, Sample
 
-
 ACCOUNT_SQL = """
 SELECT
     a.id,
@@ -168,34 +167,36 @@ class Database:
                 "optimizer telemetry snapshots must always use a read-only transaction"
             )
         group_ids = list(self.config.group_ids)
-        with self._connect(read_only=True) as connection:
-            with connection.transaction():
-                accounts = [
-                    self._account(row)
-                    for row in connection.execute(ACCOUNT_SQL, (group_ids,))
-                ]
-                samples = [
-                    self._success_sample(row)
-                    for row in connection.execute(REAL_SUCCESS_SQL, (group_ids,))
-                ]
-                samples.extend(
-                    self._failure_sample(row)
-                    for row in connection.execute(REAL_FAILURE_SQL, (group_ids,))
-                )
-                settings = {
-                    row["key"]: row["value"] for row in connection.execute(SETTINGS_SQL)
+        with (
+            self._connect(read_only=True) as connection,
+            connection.transaction(),
+        ):
+            accounts = [
+                self._account(row)
+                for row in connection.execute(ACCOUNT_SQL, (group_ids,))
+            ]
+            samples = [
+                self._success_sample(row)
+                for row in connection.execute(REAL_SUCCESS_SQL, (group_ids,))
+            ]
+            samples.extend(
+                self._failure_sample(row)
+                for row in connection.execute(REAL_FAILURE_SQL, (group_ids,))
+            )
+            settings = {
+                row["key"]: row["value"] for row in connection.execute(SETTINGS_SQL)
+            }
+            groups = {
+                int(row["id"]): {
+                    "name": row["name"],
+                    "models_list_config": row["models_list_config"],
+                    "model_routing_enabled": row["model_routing_enabled"],
                 }
-                groups = {
-                    int(row["id"]): {
-                        "name": row["name"],
-                        "models_list_config": row["models_list_config"],
-                        "model_routing_enabled": row["model_routing_enabled"],
-                    }
-                    for row in connection.execute(GROUP_SQL, (group_ids,))
-                }
-                plans = connection.execute(
-                    "SELECT COUNT(*) AS count FROM scheduled_test_plans WHERE enabled IS TRUE"
-                ).fetchone()
+                for row in connection.execute(GROUP_SQL, (group_ids,))
+            }
+            plans = connection.execute(
+                "SELECT COUNT(*) AS count FROM scheduled_test_plans WHERE enabled IS TRUE"
+            ).fetchone()
         return DatabaseSnapshot(
             captured_at=datetime.now(timezone.utc),
             accounts=accounts,

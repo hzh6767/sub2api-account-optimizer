@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from .domain import RoundTimeoutError
+from .errors import RedactedError, redacted_errors
 
 
 @dataclass(frozen=True)
@@ -67,21 +68,20 @@ class MutationExecutor:
                 )
                 continue
             try:
-                self.api.apply(mutation)
+                with redacted_errors():
+                    self.api.apply(mutation)
             except RoundTimeoutError as exc:
                 raise MutationOutcomeUnknownError(mutation) from exc
-            except Exception as exc:
+            except RedactedError as exc:
                 failed_accounts.add(mutation.account_id)
-                outcome_unknown = isinstance(exc, TimeoutError) or getattr(
-                    exc, "category", None
-                ) == "timeout"
+                outcome_unknown = exc.outcome_unknown
                 yield MutationResult(
                     mutation,
                     "unknown" if outcome_unknown else "failed",
                     (
                         "admin API timeout left mutation outcome unknown"
                         if outcome_unknown
-                        else f"admin API mutation failed: {type(exc).__name__}"
+                        else f"admin API mutation failed: {exc.error_type}"
                     ),
                 )
                 continue

@@ -41,7 +41,7 @@ class Config:
     probe_output_tokens_estimate: int = 1
 
     @classmethod
-    def from_env(cls) -> "Config":
+    def from_env(cls) -> Config:
         root = Path(os.getenv("OPTIMIZER_ROOT", "/app"))
         groups = tuple(
             int(value.strip())

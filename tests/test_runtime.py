@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import json
 import http.client
 import io
+import json
 import tempfile
 import unittest
 import urllib.error
@@ -12,8 +12,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from optimizer.api import (
-    APIError,
     AdminAPI,
+    APIError,
     TargetedProbeSafetyError,
     UrllibTransport,
     _event_failure,
@@ -363,12 +363,14 @@ class AdapterTests(unittest.TestCase):
     def test_transport_does_not_convert_round_deadline_to_upstream_timeout(self) -> None:
         transport = UrllibTransport("http://sub2api:8080")
 
-        with patch(
-            "optimizer.api.urllib.request.urlopen",
-            side_effect=RoundTimeoutError("round deadline"),
+        with (
+            patch(
+                "optimizer.api.urllib.request.urlopen",
+                side_effect=RoundTimeoutError("round deadline"),
+            ),
+            self.assertRaises(RoundTimeoutError),
         ):
-            with self.assertRaises(RoundTimeoutError):
-                transport.request("GET", "/health", None, {})
+            transport.request("GET", "/health", None, {})
 
     def test_transport_records_http_429_retry_after(self) -> None:
         transport = UrllibTransport("http://sub2api:8080")
@@ -383,9 +385,11 @@ class AdapterTests(unittest.TestCase):
         )
         before = datetime.now(timezone.utc)
 
-        with patch("optimizer.api.urllib.request.urlopen", side_effect=error):
-            with self.assertRaises(APIError) as raised:
-                transport.request("GET", "/test", None, {})
+        with (
+            patch("optimizer.api.urllib.request.urlopen", side_effect=error),
+            self.assertRaises(APIError) as raised,
+        ):
+            transport.request("GET", "/test", None, {})
 
         self.assertIsNotNone(raised.exception.reset_at)
         self.assertGreaterEqual(raised.exception.reset_at, before + timedelta(seconds=119))
@@ -403,9 +407,11 @@ class AdapterTests(unittest.TestCase):
         )
         before = datetime.now(timezone.utc)
 
-        with patch("optimizer.api.urllib.request.urlopen", side_effect=error):
-            with self.assertRaises(APIError) as raised:
-                transport.request("GET", "/test", None, {})
+        with (
+            patch("optimizer.api.urllib.request.urlopen", side_effect=error),
+            self.assertRaises(APIError) as raised,
+        ):
+            transport.request("GET", "/test", None, {})
 
         self.assertIsNotNone(raised.exception.reset_at)
         self.assertGreaterEqual(raised.exception.reset_at, before + timedelta(milliseconds=900))

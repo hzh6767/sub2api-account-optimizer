@@ -6,20 +6,18 @@ import urllib.request
 from typing import Any
 
 from .config import Config
-from .domain import RoundTimeoutError
+from .errors import RedactedError, redacted_errors
 
 
 def _http_health(url: str) -> dict[str, Any]:
     try:
-        with urllib.request.urlopen(url, timeout=4) as response:
+        with redacted_errors(), urllib.request.urlopen(url, timeout=4) as response:
             return {
                 "healthy": 200 <= response.status < 300,
                 "status_code": response.status,
             }
-    except RoundTimeoutError:
-        raise
-    except Exception as exc:
-        return {"healthy": False, "error_type": type(exc).__name__}
+    except RedactedError as exc:
+        return {"healthy": False, "error_type": exc.error_type}
 
 
 def _redis_command(*parts: str) -> bytes:
@@ -36,19 +34,18 @@ def _redis_health() -> dict[str, Any]:
     port = int(os.getenv("REDIS_PORT", "6379"))
     password = os.getenv("REDIS_PASSWORD", "")
     try:
-        with socket.create_connection((host, port), timeout=4) as connection:
-            if password:
-                connection.sendall(_redis_command("AUTH", password))
-                auth_response = connection.recv(256)
-                if not auth_response.startswith(b"+OK"):
-                    return {"healthy": False, "error_type": "RedisAuthFailed"}
-            connection.sendall(_redis_command("PING"))
-            response = connection.recv(256)
-        return {"healthy": response.startswith(b"+PONG")}
-    except RoundTimeoutError:
-        raise
-    except Exception as exc:
-        return {"healthy": False, "error_type": type(exc).__name__}
+        with redacted_errors():
+            with socket.create_connection((host, port), timeout=4) as connection:
+                if password:
+                    connection.sendall(_redis_command("AUTH", password))
+                    auth_response = connection.recv(256)
+                    if not auth_response.startswith(b"+OK"):
+                        return {"healthy": False, "error_type": "RedisAuthFailed"}
+                connection.sendall(_redis_command("PING"))
+                response = connection.recv(256)
+            return {"healthy": response.startswith(b"+PONG")}
+    except RedactedError as exc:
+        return {"healthy": False, "error_type": exc.error_type}
 
 
 def dependency_health(config: Config) -> dict[str, Any]:

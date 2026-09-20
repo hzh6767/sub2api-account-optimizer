@@ -12,7 +12,6 @@ from optimizer.policy import (
     should_probe,
 )
 
-
 NOW = datetime(2026, 7, 19, 18, 0, tzinfo=timezone.utc)
 
 

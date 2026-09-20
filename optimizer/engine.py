@@ -3,8 +3,9 @@ from __future__ import annotations
 import random
 import time
 from collections import defaultdict
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
 from .api import AdminAPI, TargetedProbeSafetyError
 from .config import Config
@@ -16,7 +17,6 @@ from .mutations import (
     MutationOutcomeUnknownError,
     MutationResult,
 )
-from .pricing import ProbeModelSelection, load_model_pricing, select_probe_model
 from .policy import (
     apply_probe_outcome,
     build_rankings,
@@ -24,6 +24,7 @@ from .policy import (
     partition_accounts,
     should_probe,
 )
+from .pricing import ProbeModelSelection, load_model_pricing, select_probe_model
 from .storage import JsonStore
 
 
@@ -439,7 +440,7 @@ class OptimizerEngine:
 
         accounts = existing.get("accounts")
         if not isinstance(accounts, list):
-            raise ValueError("activation baseline accounts must be a JSON array")
+            raise TypeError("activation baseline accounts must be a JSON array")
         existing_ids = {
             int(item["id"])
             for item in accounts

@@ -19,7 +19,6 @@ from .domain import (
     UpdateState,
 )
 
-
 TTFT_CAP_MS = 60_000
 MIN_VALID_SAMPLES = 3
 TIER_LOAD_FACTORS = {1: 15, 2: 12, 3: 8, 4: 5}

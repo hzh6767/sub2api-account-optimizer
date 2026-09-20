@@ -8,7 +8,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-
 SENSITIVE_KEYS = {
     "password",
     "cookie",
@@ -115,7 +114,7 @@ class JsonStore:
         with path.open("r", encoding="utf-8") as handle:
             value = json.load(handle)
         if not isinstance(value, dict):
-            raise ValueError(f"expected JSON object in backup {filename}")
+            raise TypeError(f"expected JSON object in backup {filename}")
         return value
 
     def write_backup(self, filename: str, payload: Any) -> Path:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import http.client
+import json
 import re
 import time
 import urllib.error

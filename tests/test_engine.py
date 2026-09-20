@@ -7,13 +7,12 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from optimizer.api import TargetedProbeSafetyError
 from optimizer.config import Config
 from optimizer.database import DatabaseSnapshot
 from optimizer.domain import Account, ProbeOutcome, RoundTimeoutError, Sample
-from optimizer.api import TargetedProbeSafetyError
 from optimizer.engine import OptimizerEngine, scheduling_rollback_mutations
 from optimizer.storage import JsonStore
-
 
 NOW = datetime(2026, 7, 19, 18, 0, tzinfo=timezone.utc)
 
