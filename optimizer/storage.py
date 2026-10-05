@@ -40,6 +40,17 @@ def sanitize(value: Any) -> Any:
     return value
 
 
+def _empty_state() -> dict[str, Any]:
+    return {"version": 1, "accounts": {}, "probe_history": []}
+
+
+class StateCorruptedError(RuntimeError):
+    def __init__(self, name: str, reason: str) -> None:
+        super().__init__(f"{name} is unreadable: {reason}")
+        self.name = name
+        self.reason = reason
+
+
 class JsonStore:
     def __init__(
         self, root: Path, *, max_history_bytes: int = 10 * 1024 * 1024
@@ -89,14 +100,15 @@ class JsonStore:
     def load_state(self) -> dict[str, Any]:
         path = self.state_dir / "state.json"
         if not path.exists():
-            return {"version": 1, "accounts": {}, "probe_history": []}
-        with path.open("r", encoding="utf-8") as handle:
-            data = json.load(handle)
-        return (
-            data
-            if isinstance(data, dict)
-            else {"version": 1, "accounts": {}, "probe_history": []}
-        )
+            return _empty_state()
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            # Atomic writes protect concurrent authors, not external corruption.
+            # A truncated state file must not stop every later round.
+            return _empty_state()
+        return data if isinstance(data, dict) else _empty_state()
 
     def write_state(self, state: dict[str, Any]) -> None:
         self._atomic_json(self.state_dir / "state.json", state)
@@ -111,8 +123,11 @@ class JsonStore:
         path = self.backups_dir / filename
         if not path.exists():
             return None
-        with path.open("r", encoding="utf-8") as handle:
-            value = json.load(handle)
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                value = json.load(handle)
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise StateCorruptedError(filename, type(exc).__name__) from None
         if not isinstance(value, dict):
             raise TypeError(f"expected JSON object in backup {filename}")
         return value

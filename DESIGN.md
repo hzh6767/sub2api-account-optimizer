@@ -35,8 +35,9 @@ than three valid samples cannot rank first and defaults to scheduling tier 3.
 
 Targeted-test candidates are restricted to the configured ordinary-text allowlist, intersected
 with each account's supported models, then ordered by the mounted Sub2API `model_pricing.json`.
-Every eligible candidate must have valid input and output pricing or probing is blocked. Price is
-used only to choose the cheapest safe probe model, never to rank customer traffic.
+Eligible candidates without valid input and output pricing are skipped, and probing is blocked only
+when no eligible candidate is priced. Price is used only to choose the cheapest safe probe model,
+never to rank customer traffic.
 
 Target tiers are `1/15`, `2/12`, `3/8`, and `4/5`; load factor is always capped at the account's
 real concurrency. A write requires two identical hourly rankings, at least 15% score movement, a

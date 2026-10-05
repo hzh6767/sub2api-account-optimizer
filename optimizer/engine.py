@@ -773,6 +773,8 @@ class OptimizerEngine:
                 account = by_id[row.account_id]
                 if account.id in duplicates or not account.schedulable:
                     continue
+                if not row.ranking_eligible:
+                    continue
                 account_record = state["accounts"].setdefault(str(account.id), {})
                 health_record = account_record.get("health", {})
                 if bool(health_record.get("auto_disabled", False)) or bool(
@@ -1071,7 +1073,7 @@ class OptimizerEngine:
             policy_rate = 288
         elif "failed" in reason:
             policy_rate = 96
-        elif "recovery" in reason or "new or low" in reason:
+        elif "recovery" in reason or "probation" in reason or "new or low" in reason:
             policy_rate = 48
         elif (
             "stable" in reason
@@ -1108,7 +1110,44 @@ class OptimizerEngine:
         return warnings
 
 
-def scheduling_rollback_mutations(baseline: dict[str, Any]) -> list[Mutation]:
+def rollback_owned_account_ids(state: dict[str, Any]) -> set[int]:
+    """Account IDs whose ``schedulable`` flag the optimizer still owns.
+
+    ``health.auto_disabled`` is only set when an optimizer-authored
+    ``schedulable=False`` write was accepted by the administrator API, so it is
+    the ownership marker. Re-enabling anything else would silently undo a
+    manual administrator disable.
+    """
+    owned: set[int] = set()
+    accounts = state.get("accounts", {})
+    if not isinstance(accounts, dict):
+        return owned
+    for account_id, record in accounts.items():
+        if not isinstance(record, dict):
+            continue
+        health = record.get("health")
+        if not isinstance(health, dict):
+            continue
+        if not bool(health.get("auto_disabled", False)):
+            continue
+        if bool(health.get("ownership_uncertain", False)):
+            continue
+        pending = health.get("pending_schedulable")
+        if isinstance(pending, bool) and pending:
+            # An optimizer-authored enable is in flight; the account is not
+            # optimizer-disabled, so leave its current schedulable value alone.
+            continue
+        try:
+            owned.add(int(account_id))
+        except (TypeError, ValueError):
+            continue
+    return owned
+
+
+def scheduling_rollback_mutations(
+    baseline: dict[str, Any], *, owned_account_ids: set[int] | None = None
+) -> list[Mutation]:
+    owned = owned_account_ids if owned_account_ids is not None else set()
     mutations: list[Mutation] = []
     for item in baseline.get("accounts", []):
         load_factor = item.get("load_factor")
@@ -1124,6 +1163,11 @@ def scheduling_rollback_mutations(baseline: dict[str, Any]) -> list[Mutation]:
                 "restore deployment baseline",
             )
         )
+        if int(item["id"]) not in owned:
+            # Only restore `schedulable` for accounts the optimizer disabled.
+            # A baseline value of True would otherwise re-enable an account an
+            # administrator deliberately turned off.
+            continue
         mutations.append(
             Mutation(
                 int(item["id"]),

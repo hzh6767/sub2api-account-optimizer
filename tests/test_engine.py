@@ -11,7 +11,11 @@ from optimizer.api import TargetedProbeSafetyError
 from optimizer.config import Config
 from optimizer.database import DatabaseSnapshot
 from optimizer.domain import Account, ProbeOutcome, RoundTimeoutError, Sample
-from optimizer.engine import OptimizerEngine, scheduling_rollback_mutations
+from optimizer.engine import (
+    OptimizerEngine,
+    rollback_owned_account_ids,
+    scheduling_rollback_mutations,
+)
 from optimizer.storage import JsonStore
 
 NOW = datetime(2026, 7, 19, 18, 0, tzinfo=timezone.utc)
@@ -373,6 +377,14 @@ class EngineTests(unittest.TestCase):
             ),
         )
 
+    def test_probation_probe_estimate_matches_its_thirty_minute_interval(self) -> None:
+        self.assertEqual(
+            48,
+            OptimizerEngine._daily_probe_rate(
+                "recovered account probation probe", 600
+            ),
+        )
+
     def test_rollback_encodes_null_load_factor_with_official_clear_value(self) -> None:
         mutations = scheduling_rollback_mutations(
             {
@@ -388,6 +400,37 @@ class EngineTests(unittest.TestCase):
         )
 
         self.assertEqual(0, mutations[0].values["load_factor"])
+
+    def test_rollback_only_restores_schedulable_for_owned_accounts(self) -> None:
+        mutations = scheduling_rollback_mutations(
+            {
+                "accounts": [
+                    {"id": 1, "priority": 2, "load_factor": 100, "schedulable": True},
+                    {"id": 2, "priority": 3, "load_factor": 200, "schedulable": True},
+                ]
+            },
+            owned_account_ids={1},
+        )
+
+        account_ids_with_schedulable_mutation = [
+            m.account_id for m in mutations if m.kind == "schedulable"
+        ]
+        self.assertEqual([1], account_ids_with_schedulable_mutation)
+
+    def test_rollback_owned_account_ids_extracts_auto_disabled_accounts(self) -> None:
+        state = {
+            "accounts": {
+                "1": {"health": {"auto_disabled": True}},
+                "2": {"health": {"auto_disabled": False}},
+                "3": {"health": {"auto_disabled": True, "ownership_uncertain": True}},
+                "4": {"health": {"auto_disabled": True, "pending_schedulable": True}},
+                "5": {"health": {"auto_disabled": True}},
+            }
+        }
+
+        owned = rollback_owned_account_ids(state)
+
+        self.assertEqual({1, 5}, owned)
 
     def test_dry_run_uses_read_only_database_and_does_not_advance_state(self) -> None:
         item = Account(1, "one", (7,), "openai", 10, 2, None, True, "active")

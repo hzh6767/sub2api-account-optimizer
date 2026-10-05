@@ -22,7 +22,7 @@ from optimizer.config import Config
 from optimizer.database import REAL_FAILURE_SQL, REAL_SUCCESS_SQL
 from optimizer.domain import RoundTimeoutError
 from optimizer.mutations import Mutation
-from optimizer.storage import JsonStore, sanitize
+from optimizer.storage import JsonStore, StateCorruptedError, sanitize
 
 
 class FakeTransport:
@@ -449,6 +449,47 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(
             "[REDACTED]", sanitize({"access_token": "secret"})["access_token"]
         )
+
+    def test_state_corrupted_error_formats_message(self) -> None:
+        exc = StateCorruptedError("state.json", "JSONDecodeError")
+        self.assertEqual("state.json is unreadable: JSONDecodeError", str(exc))
+        self.assertEqual("state.json", exc.name)
+        self.assertEqual("JSONDecodeError", exc.reason)
+
+    def test_corrupted_backup_raises_state_corrupted_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = JsonStore(Path(temp_dir))
+            backup_path = Path(temp_dir) / "backups" / "corrupted.json"
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+            backup_path.write_text("not valid json")
+
+            with self.assertRaises(StateCorruptedError) as raised:
+                store.load_backup("corrupted.json")
+
+            self.assertEqual("corrupted.json", raised.exception.name)
+            self.assertIn("Decode", raised.exception.reason)
+
+    def test_truncated_state_file_returns_empty_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = JsonStore(Path(temp_dir))
+            state_path = Path(temp_dir) / "state" / "state.json"
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text("{")
+
+            result = store.load_state()
+
+            self.assertEqual({"version": 1, "accounts": {}, "probe_history": []}, result)
+
+    def test_non_dict_state_file_returns_empty_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = JsonStore(Path(temp_dir))
+            state_path = Path(temp_dir) / "state" / "state.json"
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text("[]")
+
+            result = store.load_state()
+
+            self.assertEqual({"version": 1, "accounts": {}, "probe_history": []}, result)
 
 
 if __name__ == "__main__":

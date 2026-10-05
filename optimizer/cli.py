@@ -15,7 +15,11 @@ from .api import AdminAPI
 from .config import Config
 from .database import Database
 from .domain import RoundTimeoutError
-from .engine import OptimizerEngine, scheduling_rollback_mutations
+from .engine import (
+    OptimizerEngine,
+    rollback_owned_account_ids,
+    scheduling_rollback_mutations,
+)
 from .errors import RedactedError, redacted_errors
 from .health import dependency_health
 from .mutations import MutationExecutor
@@ -57,6 +61,11 @@ def single_instance(lock_path: Path) -> Iterator[None]:
 @contextmanager
 def round_timeout(seconds: int) -> Iterator[None]:
     if os.name == "nt" or not hasattr(signal, "SIGALRM"):
+        print(
+            "round deadline unavailable on this platform: "
+            f"{seconds}s limit will not be enforced",
+            file=sys.stderr,
+        )
         yield
         return
 
@@ -119,8 +128,11 @@ def _summary(report: dict[str, object]) -> dict[str, object]:
 
 
 def _load_json(path: Path) -> dict[str, object]:
-    with path.open("r", encoding="utf-8") as handle:
-        value = json.load(handle)
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            value = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RedactedError(type(exc).__name__) from None
     if not isinstance(value, dict):
         raise TypeError(f"expected JSON object in {path}")
     return value
@@ -152,8 +164,12 @@ def _rollback(config: Config, store: JsonStore, api: AdminAPI) -> int:
         print("rollback blocked: activation baseline is missing", file=sys.stderr)
         return 2
     baseline = _load_json(path)
+    owned_account_ids = rollback_owned_account_ids(store.load_state())
     results = MutationExecutor(api, apply_enabled=True).execute(
-        scheduling_rollback_mutations(baseline), dry_run=False
+        scheduling_rollback_mutations(
+            baseline, owned_account_ids=owned_account_ids
+        ),
+        dry_run=False,
     )
     print(json.dumps(sanitize(results), ensure_ascii=True, indent=2, sort_keys=True))
     return 0 if all(result.status == "applied" for result in results) else 1

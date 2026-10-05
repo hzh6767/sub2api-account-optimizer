@@ -45,7 +45,7 @@ class PricingTests(unittest.TestCase):
         self.assertIsNone(selection.model)
         self.assertIsNone(selection.estimated_cost_usd)
 
-    def test_partial_catalog_price_blocks_model_selection(self) -> None:
+    def test_partial_catalog_price_falls_through_to_priced_candidate(self) -> None:
         selection = select_probe_model(
             {"gpt-5.5", "gpt-5.6-terra"},
             ("gpt-5.6-terra", "gpt-5.5"),
@@ -59,7 +59,7 @@ class PricingTests(unittest.TestCase):
             output_tokens=1,
         )
 
-        self.assertIsNone(selection.model)
+        self.assertEqual("gpt-5.6-terra", selection.model)
 
 
 if __name__ == "__main__":

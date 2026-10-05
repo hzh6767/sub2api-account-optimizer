@@ -31,10 +31,10 @@ def _redis_command(*parts: str) -> bytes:
 
 def _redis_health() -> dict[str, Any]:
     host = os.getenv("REDIS_HOST", "redis")
-    port = int(os.getenv("REDIS_PORT", "6379"))
     password = os.getenv("REDIS_PASSWORD", "")
     try:
         with redacted_errors():
+            port = int(os.getenv("REDIS_PORT", "6379"))
             with socket.create_connection((host, port), timeout=4) as connection:
                 if password:
                     connection.sendall(_redis_command("AUTH", password))
@@ -60,8 +60,12 @@ def dependency_health(config: Config) -> dict[str, Any]:
             os.getenv("CHECKIN_HEALTH_URL", "http://checkin:8091/health")
         ),
         "postgres": {
+            # This function performs no live Postgres query; the read-only
+            # telemetry transaction in Database.snapshot is the real evidence.
             "healthy": True,
-            "evidence": "read-only telemetry transaction completed",
+            "verified": False,
+            "source": "assumed",
+            "evidence": "assumed from the read-only telemetry transaction, not re-checked here",
         },
         "redis": _redis_health(),
     }

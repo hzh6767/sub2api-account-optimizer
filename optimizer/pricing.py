@@ -67,7 +67,11 @@ def select_probe_model(
             output_tokens=output_tokens,
         )
         if cost is None:
-            return ProbeModelSelection(None, None)
+            # One unpriced catalog entry must not disable probing for every
+            # account; fall through to the cheapest priced candidate instead.
+            continue
         priced.append((cost, order, model))
+    if not priced:
+        return ProbeModelSelection(None, None)
     cost, _order, model = min(priced)
     return ProbeModelSelection(model, cost)
