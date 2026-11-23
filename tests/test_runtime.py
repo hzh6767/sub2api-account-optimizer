@@ -456,6 +456,24 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual("state.json", exc.name)
         self.assertEqual("JSONDecodeError", exc.reason)
 
+    def test_history_redacts_http_credentials_and_keeps_other_headers(self) -> None:
+        headers = {
+            "X-Api-Key": "example-key",
+            "Set-Cookie": ["example-cookie"],
+            "Proxy-Authorization": "example-authorization",
+            "X-Request-ID": "request-7",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = JsonStore(Path(temp_dir))
+            store.append_history({"headers": headers})
+            saved = json.loads((store.logs_dir / "history.jsonl").read_text("utf-8"))
+        self.assertEqual(saved["headers"], {
+            "X-Api-Key": "[REDACTED]",
+            "Set-Cookie": "[REDACTED]",
+            "Proxy-Authorization": "[REDACTED]",
+            "X-Request-ID": "request-7",
+        })
+
     def test_corrupted_backup_raises_state_corrupted_error(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = JsonStore(Path(temp_dir))
