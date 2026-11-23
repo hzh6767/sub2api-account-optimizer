@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,7 @@ def load_model_pricing(path: Path | None) -> dict[str, dict[str, Any]]:
             value = json.load(handle)
     except RoundTimeoutError:
         raise
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         return {}
     if not isinstance(value, dict):
         return {}
@@ -38,13 +39,17 @@ def _estimated_cost(
 ) -> float | None:
     input_cost = details.get("input_cost_per_token")
     output_cost = details.get("output_cost_per_token")
-    if not isinstance(input_cost, (int, float)) or not isinstance(
-        output_cost, (int, float)
-    ):
+    for rate in (input_cost, output_cost):
+        if isinstance(rate, bool) or not isinstance(rate, (int, float)) or rate < 0:
+            return None
+    try:
+        total = (
+            max(0, input_tokens) * float(input_cost)
+            + max(0, output_tokens) * float(output_cost)
+        )
+    except OverflowError:
         return None
-    return max(0, input_tokens) * float(input_cost) + max(0, output_tokens) * float(
-        output_cost
-    )
+    return total if math.isfinite(total) else None
 
 
 def select_probe_model(

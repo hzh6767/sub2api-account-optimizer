@@ -1,11 +1,37 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
-from optimizer.pricing import select_probe_model
+from optimizer.pricing import load_model_pricing, select_probe_model
 
 
 class PricingTests(unittest.TestCase):
+    def test_invalid_rates_fall_through_to_a_free_model(self) -> None:
+        for rate in (-0.1, True, float("inf"), float("nan"), 10**400, 1e308):
+            for field in ("input_cost_per_token", "output_cost_per_token"):
+                with self.subTest(rate=rate, field=field):
+                    free = {"input_cost_per_token": 0, "output_cost_per_token": 0}
+                    prices = {"bad": {**free, field: rate}, "free": free}
+                    chosen = select_probe_model(
+                        {"bad", "free"}, ("bad", "free"),
+                        prices,
+                        input_tokens=2, output_tokens=2,
+                    )
+                    self.assertEqual(chosen.model, "free")
+                    self.assertEqual(chosen.estimated_cost_usd, 0)
+                    unpriced = select_probe_model(
+                        {"bad"}, ("bad",), prices, input_tokens=2, output_tokens=2,
+                    )
+                    self.assertIsNone(unpriced.model)
+
+    def test_invalid_catalog_encoding_is_treated_as_unpriced(self) -> None:
+        with TemporaryDirectory() as directory:
+            catalog = Path(directory) / "pricing.json"
+            catalog.write_bytes(b"\xff")
+            self.assertEqual(load_model_pricing(catalog), {})
+
     def test_selects_lowest_estimated_probe_cost_from_allowed_models(self) -> None:
         pricing = {
             "gpt-5.5": {
