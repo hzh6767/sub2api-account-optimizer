@@ -16,7 +16,10 @@ SENSITIVE_KEYS = {
     "access_token",
     "refresh_token",
     "api_key",
+    "x_api_key",
     "authorization",
+    "proxy_authorization",
+    "set_cookie",
     "secret",
     "jwt",
 }
@@ -30,7 +33,7 @@ def sanitize(value: Any) -> Any:
     if isinstance(value, dict):
         result: dict[str, Any] = {}
         for key, item in value.items():
-            normalized = str(key).strip().lower()
+            normalized = str(key).strip().lower().replace("-", "_")
             result[str(key)] = (
                 "[REDACTED]" if normalized in SENSITIVE_KEYS else sanitize(item)
             )
